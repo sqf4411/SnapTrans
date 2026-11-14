@@ -55,7 +55,9 @@ class _ImageView(QScrollArea):
 
 
 class MainWindow(QMainWindow):
+    snip_capture = Signal()
     snip_translate = Signal()
+    pin_record = Signal(str)         # 把记录中的截图贴到屏幕
     snip_ocr = Signal()
     clipboard_translate = Signal()
     reprocess = Signal(str)          # 重新识别并翻译某条记录
@@ -77,10 +79,11 @@ class MainWindow(QMainWindow):
         tb = QToolBar()
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        self.act_translate = QAction("📷 截图翻译", self, triggered=self.snip_translate.emit)
+        self.act_capture = QAction("✂ 截图", self, triggered=self.snip_capture.emit)
+        self.act_translate = QAction("🌐 截图翻译", self, triggered=self.snip_translate.emit)
         self.act_ocr = QAction("🔤 截图识字", self, triggered=self.snip_ocr.emit)
         self.act_clip = QAction("📋 翻译剪贴板图片", self, triggered=self.clipboard_translate.emit)
-        for a in (self.act_translate, self.act_ocr, self.act_clip):
+        for a in (self.act_capture, self.act_translate, self.act_ocr, self.act_clip):
             tb.addAction(a)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -151,10 +154,13 @@ class MainWindow(QMainWindow):
             return b
 
         self.btn_copy_img = btn("复制图片", self._copy_image)
+        self.btn_pin = btn("📌 贴图", lambda: self._current and self.pin_record.emit(self._current),
+                           "钉在屏幕上；在贴图上按 , / . 可翻看其他历史截图")
         self.btn_reprocess = btn("重新识别", lambda: self._current and self.reprocess.emit(self._current),
                                  "重新 OCR 并翻译（结果在浮窗显示，同时更新本记录）")
         actions = QHBoxLayout()
         actions.addWidget(self.info, 1)
+        actions.addWidget(self.btn_pin)
         actions.addWidget(self.btn_copy_img)
         actions.addWidget(btn("另存为…", self._save_image_as))
         actions.addWidget(self.btn_reprocess)
@@ -206,9 +212,11 @@ class MainWindow(QMainWindow):
     def update_hotkey_labels(self, cfg: dict) -> None:
         self.cfg = cfg
         hk, hk_ocr = cfg.get("hotkey") or "无", cfg.get("hotkey_ocr") or "无"
+        hk_cap = cfg.get("hotkey_capture") or "无"
+        self.act_capture.setToolTip(f"截图后可标注、贴图、保存。快捷键 {hk_cap}")
         self.act_translate.setToolTip(f"快捷键 {hk}")
         self.act_ocr.setToolTip(f"快捷键 {hk_ocr}")
-        self.hotkey_label.setText(f"截图翻译 {hk}　截图识字 {hk_ocr}")
+        self.hotkey_label.setText(f"截图 {hk_cap}　截图翻译 {hk}　截图识字 {hk_ocr}")
 
     def reload(self) -> None:
         keyword = self.search.text().strip().lower()
@@ -240,7 +248,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _item_text(r: dict) -> str:
-        mode = {"translate": "翻译", "ocr": "识字", "clipboard": "剪贴板", "text": "文本"}.get(r.get("mode"), "")
+        mode = {"capture": "截图", "translate": "翻译", "ocr": "识字", "clipboard": "剪贴板", "text": "文本"}.get(r.get("mode"), "")
         first = (r.get("source") or "（未识别）").strip().splitlines()[0][:40] if r.get("source") else "（识别中/无文字）"
         return f"{r['time'][5:16]}  {mode}\n{first}"
 
@@ -279,7 +287,7 @@ class MainWindow(QMainWindow):
         self._current = rid
         r = self.history.get(rid) if rid else None
         has = r is not None
-        for w in (self.btn_copy_img, self.btn_reprocess):
+        for w in (self.btn_copy_img, self.btn_reprocess, self.btn_pin):
             w.setEnabled(has and self.history.image_path(rid).exists())
         if not has:
             self.info.setText("")
@@ -357,6 +365,7 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         menu.addAction("打开图片", lambda: self._open_image(item.data(Qt.UserRole)))
+        menu.addAction("贴到屏幕", lambda: self.pin_record.emit(item.data(Qt.UserRole)))
         menu.addAction("复制图片", self._copy_image)
         menu.addAction("重新识别并翻译", lambda: self.reprocess.emit(item.data(Qt.UserRole)))
         menu.addSeparator()

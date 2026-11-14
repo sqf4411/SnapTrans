@@ -42,12 +42,16 @@ OCR_PRESETS = {
 LANGUAGES = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
 
 DEFAULTS = {
+    "hotkey_capture": "Alt+S",  # 普通截图（标注 / 贴图）
     "hotkey": "Alt+Q",          # 截图翻译
     "hotkey_ocr": "Alt+W",      # 截图 OCR（只识别并复制文字）
     "target_lang": "简体中文",
     "alt_lang": "English",      # 原文已经是目标语言时，改为翻译成这个语言
     "autostart": False,
     "copy_translation": False,  # 翻译完成后自动复制译文
+    "translate_display": "bubble",  # bubble：贴在截图旁边；window：弹出窗口
+    "bubble_font_size": 11,
+    "save_dir": "",             # 上次保存截图的文件夹
     "history_enabled": True,    # 保存截图记录
     "history_limit": 200,       # 最多保留条数
     "hide_on_snip": True,       # 截图前隐藏主窗口

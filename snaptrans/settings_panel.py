@@ -95,6 +95,7 @@ class SettingsPanel(QWidget):
 
     def _general_tab(self) -> QWidget:
         c = self.cfg
+        self.hk_capture = _key_edit(c["hotkey_capture"])
         self.hk_translate = _key_edit(c["hotkey"])
         self.hk_ocr = _key_edit(c["hotkey_ocr"])
         self.target_lang = QComboBox()
@@ -113,8 +114,20 @@ class SettingsPanel(QWidget):
         self.close_to_tray.setChecked(c["close_to_tray"])
 
         form = QFormLayout()
+        self.display = QComboBox()
+        self.display.addItem("贴在截图旁边（不遮挡原文）", "bubble")
+        self.display.addItem("弹出翻译窗口", "window")
+        self.display.setCurrentIndex(max(0, self.display.findData(c["translate_display"])))
+        self.bubble_font = QSpinBox()
+        self.bubble_font.setRange(8, 24)
+        self.bubble_font.setSuffix(" pt")
+        self.bubble_font.setValue(int(c["bubble_font_size"]))
+
+        form.addRow("截图快捷键（标注 / 贴图）：", self.hk_capture)
         form.addRow("截图翻译快捷键：", self.hk_translate)
         form.addRow("截图识字快捷键：", self.hk_ocr)
+        form.addRow("译文显示方式：", self.display)
+        form.addRow("译文字号：", self.bubble_font)
         form.addRow("目标语言：", self.target_lang)
         form.addRow("原文已是目标语言时译为：", self.alt_lang)
         tip = QLabel("点击快捷键输入框后直接按下新的组合键即可修改，按 × 清空表示不使用。"
@@ -344,9 +357,13 @@ class SettingsPanel(QWidget):
     def _about_tab(self) -> QWidget:
         label = QLabel(
             f"<h3>SnapTrans {__version__}</h3>"
-            "<p>截图 OCR 实时翻译工具，可与 Snipaste 搭配使用。</p>"
-            "<p>按快捷键 → 框选区域 → 自动识别并翻译。<br>"
-            "结果窗口：Esc 关闭，Ctrl+Enter 重新翻译，Ctrl+Shift+C 复制译文。</p>"
+            "<p>截图 OCR 实时翻译工具。</p>"
+            "<p><b>截图界面</b>：拖动框选，单击选中窗口；选好后可拖动 / 调整选区，方向键微调。<br>"
+            "标注：R 矩形，E 椭圆，A 箭头，P 画笔，M 荧光笔，T 文字，X 马赛克，Ctrl+Z / Ctrl+Y 撤销 / 重做。<br>"
+            "Enter 或双击：复制并完成；Ctrl+P 贴图；Ctrl+T 翻译；Ctrl+O 识字；Ctrl+S 保存；Esc / 右键 取消。</p>"
+            "<p><b>贴图</b>：拖动移动，滚轮缩放，Ctrl+滚轮 透明度，<b>, / .</b> 上一张 / 下一张历史截图，"
+            "Ctrl+T 翻译，Ctrl+C 复制，双击或 Esc 关闭，右键更多。</p>"
+            "<p><b>译文气泡</b>：Esc 关闭，📌 固定，“展开”打开窗口修改原文 / 切换语言。</p>"
             f"<p>配置文件：{config.CONFIG_PATH}</p>"
         )
         label.setWordWrap(True)
@@ -361,12 +378,15 @@ class SettingsPanel(QWidget):
 
     def _collect(self) -> dict:
         c = copy.deepcopy(self.cfg)
+        c["hotkey_capture"] = self.hk_capture.keySequence().toString(QKeySequence.PortableText)
         c["hotkey"] = self.hk_translate.keySequence().toString(QKeySequence.PortableText)
         c["hotkey_ocr"] = self.hk_ocr.keySequence().toString(QKeySequence.PortableText)
         c["target_lang"] = self.target_lang.currentText()
         c["alt_lang"] = self.alt_lang.currentText()
         c["autostart"] = self.autostart.isChecked()
         c["copy_translation"] = self.copy_translation.isChecked()
+        c["translate_display"] = self.display.currentData()
+        c["bubble_font_size"] = self.bubble_font.value()
         c["hide_on_snip"] = self.hide_on_snip.isChecked()
         c["close_to_tray"] = self.close_to_tray.isChecked()
         c["history_enabled"] = self.history_enabled.isChecked()
@@ -392,16 +412,19 @@ class SettingsPanel(QWidget):
 
     def _save(self) -> None:
         cfg = self._collect()
-        for name, key in (("截图翻译", "hotkey"), ("截图识字", "hotkey_ocr")):
-            if cfg[key]:
-                try:
-                    parse_hotkey(cfg[key])
-                except ValueError as e:
-                    QMessageBox.warning(self, "SnapTrans", f"{name}快捷键无效：{e}")
-                    return
-        if cfg["hotkey"] and cfg["hotkey"] == cfg["hotkey_ocr"]:
-            QMessageBox.warning(self, "SnapTrans", "两个快捷键不能相同")
-            return
+        used = {}
+        for name, key in (("截图", "hotkey_capture"), ("截图翻译", "hotkey"), ("截图识字", "hotkey_ocr")):
+            if not cfg[key]:
+                continue
+            try:
+                parse_hotkey(cfg[key])
+            except ValueError as e:
+                QMessageBox.warning(self, "SnapTrans", f"{name}快捷键无效：{e}")
+                return
+            if cfg[key] in used:
+                QMessageBox.warning(self, "SnapTrans", f"“{name}”和“{used[cfg[key]]}”的快捷键相同：{cfg[key]}")
+                return
+            used[cfg[key]] = name
         self.cfg = cfg
         self.saved.emit(copy.deepcopy(cfg))
         self.save_hint.setText("✔ 已保存")
@@ -409,11 +432,14 @@ class SettingsPanel(QWidget):
 
     def _restore(self) -> None:
         d = config.DEFAULTS
+        self.hk_capture.setKeySequence(QKeySequence(d["hotkey_capture"]))
         self.hk_translate.setKeySequence(QKeySequence(d["hotkey"]))
         self.hk_ocr.setKeySequence(QKeySequence(d["hotkey_ocr"]))
         self.target_lang.setCurrentText(d["target_lang"])
         self.alt_lang.setCurrentText(d["alt_lang"])
         self.copy_translation.setChecked(d["copy_translation"])
+        self.display.setCurrentIndex(self.display.findData(d["translate_display"]))
+        self.bubble_font.setValue(d["bubble_font_size"])
         self.hide_on_snip.setChecked(d["hide_on_snip"])
         self.close_to_tray.setChecked(d["close_to_tray"])
         self.history_enabled.setChecked(d["history_enabled"])

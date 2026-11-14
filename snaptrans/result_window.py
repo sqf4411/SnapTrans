@@ -92,6 +92,21 @@ class ResultWindow(QWidget):
         self._show_near(anchor)
         self._run(Job(self._get_config(), image=image, translate=translate), copy_ocr=not translate)
 
+    def show_existing(self, source: str, translation: str, target: str, status: str,
+                      record_id: str | None, anchor: QRect | None) -> None:
+        """把气泡里已有的结果放到窗口中继续编辑。"""
+        if self._job:
+            self._job.cancel()
+            self._job = None
+        self._record_id = record_id
+        self.source.setPlainText(source)
+        self._set_translation(translation)
+        self.target.setVisible(True)
+        if target:
+            self.lang_box.setCurrentText(target)
+        self._set_status(status)
+        self._show_near(anchor)
+
     def start_text(self, text: str, record_id: str | None = None) -> None:
         self._record_id = record_id
         self.source.setPlainText(text)
