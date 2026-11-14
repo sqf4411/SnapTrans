@@ -1,9 +1,8 @@
 @echo off
-chcp 65001 >nul
-rem 启动 SnapTrans（无控制台窗口）。首次使用先运行 setup.bat
+rem Start SnapTrans without a console window. Run setup.bat first.
 cd /d "%~dp0"
 if not exist ".venv\Scripts\pythonw.exe" (
-  echo 请先运行 setup.bat 安装依赖
+  echo [SnapTrans] .venv not found. Please run setup.bat first.
   pause
   exit /b 1
 )
