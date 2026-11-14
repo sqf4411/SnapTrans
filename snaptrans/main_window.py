@@ -1,10 +1,10 @@
 """主窗口：工具栏 + 截图记录（列表 / 预览 / 文字）+ 设置。"""
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QIcon, QImage, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QFileDialog, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
+    QFileDialog, QFrame, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
     QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget,
 )
 
@@ -14,41 +14,51 @@ from .settings_panel import SettingsPanel
 THUMB = QSize(72, 48)
 
 
-class _ImageView(QScrollArea):
-    """截图预览，自动缩放到可用宽度；双击用系统看图软件打开。"""
+class _ImageView(QFrame):
+    """截图预览：在固定区域内等比缩放显示（只缩小不放大），区域大小不随图片变化。双击用系统看图软件打开。"""
     double_clicked = Signal()
 
     def __init__(self):
         super().__init__()
         self._pixmap = QPixmap()
-        self.label = QLabel("没有图片")
-        self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("color: gray;")
-        self.setWidget(self.label)
-        self.setWidgetResizable(True)
-        self.setAlignment(Qt.AlignCenter)
-        self.setMinimumHeight(120)
+        self._scaled = QPixmap()
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.setMinimumSize(120, 120)
+        self.setToolTip("双击用系统看图软件打开")
+
+    def sizeHint(self):
+        return QSize(400, 260)
 
     def set_pixmap(self, pm: QPixmap) -> None:
         self._pixmap = pm
-        self._refresh()
-
-    def _refresh(self) -> None:
-        if self._pixmap.isNull():
-            self.label.setPixmap(QPixmap())
-            self.label.setText("没有图片")
-            return
-        dpr = self.devicePixelRatioF()
-        avail = self.viewport().size() * dpr
-        pm = self._pixmap
-        if pm.width() > avail.width() or pm.height() > avail.height():
-            pm = pm.scaled(avail, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        pm.setDevicePixelRatio(dpr)
-        self.label.setPixmap(pm)
+        self._scaled = QPixmap()
+        self.update()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._refresh()
+        self._scaled = QPixmap()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        area = self.contentsRect().adjusted(6, 6, -6, -6)
+        if self._pixmap.isNull():
+            p.setPen(QColor("gray"))
+            p.drawText(area, Qt.AlignCenter, "没有图片")
+            return
+        dpr = self.devicePixelRatioF()
+        if self._scaled.isNull():
+            pm = self._pixmap
+            avail = area.size() * dpr
+            if pm.width() > avail.width() or pm.height() > avail.height():
+                pm = pm.scaled(avail, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            self._scaled = pm
+        size = self._scaled.deviceIndependentSize().toSize()
+        x = area.left() + (area.width() - size.width()) // 2
+        y = area.top() + (area.height() - size.height()) // 2
+        p.drawPixmap(x, y, self._scaled)
 
     def mouseDoubleClickEvent(self, e):
         self.double_clicked.emit()
@@ -139,6 +149,7 @@ class MainWindow(QMainWindow):
         # 右侧详情
         self.info = QLabel()
         self.info.setStyleSheet("color: gray;")
+        self.info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)  # 长文本不撑宽窗口
         self.image_view = _ImageView()
         self.image_view.double_clicked.connect(lambda: self._open_image(self._current))
         self.source = QPlainTextEdit()
@@ -259,7 +270,14 @@ class MainWindow(QMainWindow):
         img = QImage(str(path))
         if img.isNull():
             return QIcon()
-        return QIcon(QPixmap.fromImage(img.scaled(THUMB * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+        # 画到统一尺寸的透明画布中央，避免不同比例的缩略图让文字错位
+        canvas = QPixmap(THUMB * 2)
+        canvas.fill(Qt.transparent)
+        scaled = img.scaled(THUMB * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        p = QPainter(canvas)
+        p.drawImage((canvas.width() - scaled.width()) // 2, (canvas.height() - scaled.height()) // 2, scaled)
+        p.end()
+        return QIcon(canvas)
 
     def _select_record(self, rid: str) -> None:
         """新截图后自动选中最新一条（搜索过滤中则先清空搜索）。"""
@@ -303,6 +321,7 @@ class MainWindow(QMainWindow):
             timing.append(f"翻译 {r['tr_ms']}ms")
         target = f"→ {r['target']}  " if r.get("target") else ""
         self.info.setText(f"{r['time']}  {size}{target}{' · '.join(timing)}")
+        self.info.setToolTip(self.info.text())
         path = self.history.image_path(rid)
         self.image_view.set_pixmap(QPixmap(str(path)) if path.exists() else QPixmap())
         if self.source.toPlainText() != r.get("source", ""):

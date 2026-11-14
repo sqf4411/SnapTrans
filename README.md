@@ -47,6 +47,17 @@ Windows 上的截图 OCR 实时翻译工具，用法类似 macOS 上的 Bob，�
 
 ## 安装和运行
 
+### 直接使用 exe（推荐）
+
+把 `SnapTrans-win64.zip` 解压到任意文件夹，双击 `SnapTrans.exe` 即可，不需要安装 Python。
+在设置里勾选「开机启动」后，会自动登记 exe 的路径。
+
+自己打包：双击 `build.bat`。它会在独立的 `.venv-build` 中安装依赖并调用 PyInstaller，
+输出 `dist\SnapTrans\SnapTrans.exe` 和 `dist\SnapTrans-win64.zip`。
+打包时使用文件夹模式（onedir）：启动快，不需要每次把文件解压到临时目录。
+
+### 从源码运行
+
 需要 Windows 10/11 和 Python 3.10 以上版本。
 
 ```bat

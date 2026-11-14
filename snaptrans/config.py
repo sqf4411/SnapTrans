@@ -54,7 +54,6 @@ DEFAULTS = {
     "save_dir": "",             # 上次保存截图的文件夹
     "history_enabled": True,    # 保存截图记录
     "history_limit": 200,       # 最多保留条数
-    "hide_on_snip": True,       # 截图前隐藏主窗口
     "close_to_tray": True,      # 关闭主窗口时最小化到托盘
     "ocr": {
         "engine": "windows",    # windows | api

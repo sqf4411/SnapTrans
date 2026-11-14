@@ -24,7 +24,17 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 SERVER_NAME = f"SnapTrans-{getpass.getuser()}"
 
 
+def _resource_dir() -> Path:
+    """打包后资源在 PyInstaller 的解包目录，开发时在项目根目录。"""
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+
+
 def make_icon() -> QIcon:
+    ico = _resource_dir() / "assets" / "icon.ico"
+    if ico.exists():
+        icon = QIcon(str(ico))
+        if not icon.isNull():
+            return icon
     pm = QPixmap(64, 64)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
@@ -71,9 +81,7 @@ class App:
         self.snip = SnipController()
         self.snip.captured.connect(self._on_captured)
         self.snip.action.connect(self._on_action)
-        self.snip.canceled.connect(self._restore_main)
         self._snip_mode = "translate"
-        self._main_was_visible = False
 
         self.result = ResultWindow(lambda: self.cfg)
         self.result.setWindowIcon(self.icon)
@@ -195,21 +203,7 @@ class App:
             return
         self._snip_mode = mode
         self._warmup()  # 用户框选的同时，后台把网络连接建好
-        main_showing = self.main.isVisible() and not self.main.isMinimized()
-        self._main_was_visible = main_showing and self.cfg.get("hide_on_snip", True)
-        if self._main_was_visible:
-            self.main.hide()
-            # 等窗口隐藏动画结束，避免被截进去
-            QTimer.singleShot(200, lambda: self.snip.start(editable=mode == "capture"))
-        else:
-            self.snip.start(editable=mode == "capture")
-
-    def _restore_main(self) -> None:
-        if self._main_was_visible:
-            self._main_was_visible = False
-            self.main.setAttribute(Qt.WA_ShowWithoutActivating, True)
-            self.main.show()
-            self.main.setAttribute(Qt.WA_ShowWithoutActivating, False)
+        self.snip.start(editable=mode == "capture")
 
     def _record(self, image: QImage, mode: str) -> str | None:
         return self.history.add_image(image, mode) if self.cfg.get("history_enabled", True) else None
@@ -223,13 +217,11 @@ class App:
             self.bubble.start_image(image, anchor, translate=translate, record_id=rid)
 
     def _on_captured(self, image: QImage, rect: QRect) -> None:
-        self._restore_main()
         rid = self._record(image, self._snip_mode)
         self._show_result(image, rect, self._snip_mode == "translate", rid)
 
     def _on_action(self, action: str, image: QImage, rect: QRect) -> None:
         """普通截图模式下，工具栏上的操作。"""
-        self._restore_main()
         rid = self._record(image, {"translate": "translate", "ocr": "ocr"}.get(action, "capture"))
         if action == "copy":
             QApplication.clipboard().setImage(image)
@@ -358,12 +350,39 @@ def _notify_running_instance() -> bool:
     return False
 
 
+def _selftest(path: str) -> int:
+    """打包后的自检：加载各模块并跑一次本地 OCR，结果写入文件。用法：SnapTrans.exe --selftest out.txt"""
+    import time
+    import traceback
+
+    lines = []
+    try:
+        from . import winutil
+        from .settings_panel import _sample_image
+        t0 = time.perf_counter()
+        text = ocr.recognize(_sample_image(), config.DEFAULTS["ocr"])
+        lines.append(f"ocr ok {round((time.perf_counter() - t0) * 1000)}ms: {text}")
+        lines.append(f"ocr languages: {ocr.windows_languages()}")
+        lines.append(f"windows: {len(winutil.window_rects())}, monitors: {len(winutil.monitor_rects())}")
+        lines.append(f"icon ok: {not make_icon().isNull()}")
+        code = 0
+    except Exception:
+        lines.append(traceback.format_exc())
+        code = 1
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
+    return code
+
+
 def main() -> int:
     # 高 DPI 下截图按物理像素取，避免模糊
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     qapp = QApplication(sys.argv)
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setApplicationName(config.APP_NAME)
+
+    if "--selftest" in sys.argv:
+        i = sys.argv.index("--selftest")
+        return _selftest(sys.argv[i + 1] if i + 1 < len(sys.argv) else "selftest.txt")
 
     if _notify_running_instance():
         return 0
