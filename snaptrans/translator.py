@@ -60,7 +60,7 @@ def build_messages(text: str, target: str) -> list:
 
 def translate_stream(text: str, target: str, tcfg: dict, cancel: threading.Event | None = None):
     if not tcfg.get("api_key") and "localhost" not in tcfg.get("base_url", ""):
-        raise net.ApiError("未填写翻译服务的 API Key，请在托盘图标 → 设置 → 翻译 中填写")
+        raise net.ApiError("未填写翻译服务的 API Key，请在主窗口 → 设置 → 翻译 中填写")
     yield from net.chat_stream(
         tcfg["base_url"], tcfg["api_key"], tcfg["model"], build_messages(text, target),
         temperature=float(tcfg.get("temperature", 0.3)), cancel=cancel,

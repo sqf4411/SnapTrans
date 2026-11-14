@@ -1,18 +1,19 @@
-"""设置窗口：快捷键、OCR 引擎、翻译服务商（API Key / 地址 / 模型）。"""
+"""设置面板（嵌在主窗口里）：快捷键、OCR 引擎、翻译服务商、截图记录。"""
 
 import copy
 import threading
 import time
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QKeySequenceEdit, QLabel, QLineEdit, QPushButton, QRadioButton, QTabWidget,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QKeySequenceEdit,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QSpinBox, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
-from . import __version__, config, net, ocr, translator
+from . import __version__, config, ocr, translator
+from .hotkey import parse_hotkey
 
 
 class _Bridge(QObject):
@@ -54,11 +55,13 @@ def _sample_image() -> QImage:
     return img
 
 
-class SettingsDialog(QDialog):
+class SettingsPanel(QWidget):
+    saved = Signal(dict)
+    open_history_dir = Signal()
+    clear_history = Signal()
+
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("SnapTrans 首选项")
-        self.setMinimumWidth(480)
         self.cfg = copy.deepcopy(cfg)
         self._bridge = _Bridge()
         self._bridge.result.connect(lambda label, text: label.setText(text))
@@ -67,19 +70,26 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._general_tab(), "常规")
         tabs.addTab(self._ocr_tab(), "OCR")
         tabs.addTab(self._translate_tab(), "翻译")
+        tabs.addTab(self._history_tab(), "记录")
         tabs.addTab(self._about_tab(), "关于")
+        self.tabs = tabs
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
-        buttons.button(QDialogButtonBox.Ok).setText("保存")
-        buttons.button(QDialogButtonBox.Cancel).setText("取消")
-        buttons.button(QDialogButtonBox.RestoreDefaults).setText("恢复默认")
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self._restore)
+        self.save_hint = QLabel()
+        self.save_hint.setStyleSheet("color: gray;")
+        restore = QPushButton("恢复默认")
+        restore.clicked.connect(self._restore)
+        save = QPushButton("保存设置")
+        save.setDefault(True)
+        save.clicked.connect(self._save)
+        bar = QHBoxLayout()
+        bar.addWidget(self.save_hint, 1)
+        bar.addWidget(restore)
+        bar.addWidget(save)
 
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(tabs)
-        lay.addWidget(buttons)
+        lay.addLayout(bar)
 
     # ------------------------------------------------------------ 常规
 
@@ -97,13 +107,18 @@ class SettingsDialog(QDialog):
         self.autostart.setChecked(c["autostart"])
         self.copy_translation = QCheckBox("翻译完成后自动复制译文")
         self.copy_translation.setChecked(c["copy_translation"])
+        self.hide_on_snip = QCheckBox("截图前隐藏主窗口")
+        self.hide_on_snip.setChecked(c["hide_on_snip"])
+        self.close_to_tray = QCheckBox("关闭主窗口时最小化到托盘（不退出）")
+        self.close_to_tray.setChecked(c["close_to_tray"])
 
         form = QFormLayout()
         form.addRow("截图翻译快捷键：", self.hk_translate)
         form.addRow("截图识字快捷键：", self.hk_ocr)
         form.addRow("目标语言：", self.target_lang)
         form.addRow("原文已是目标语言时译为：", self.alt_lang)
-        tip = QLabel("提示：Snipaste 默认占用 F1 / F3，请避免冲突。快捷键只能是单个组合键。")
+        tip = QLabel("点击快捷键输入框后直接按下新的组合键即可修改，按 × 清空表示不使用。"
+                     "Snipaste 默认占用 F1 / F3，请避免冲突。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color: gray;")
 
@@ -112,6 +127,8 @@ class SettingsDialog(QDialog):
         lay.addLayout(form)
         lay.addWidget(self.autostart)
         lay.addWidget(self.copy_translation)
+        lay.addWidget(self.hide_on_snip)
+        lay.addWidget(self.close_to_tray)
         lay.addWidget(tip)
         lay.addStretch()
         return w
@@ -275,6 +292,53 @@ class SettingsDialog(QDialog):
 
         threading.Thread(target=run, daemon=True).start()
 
+    # ------------------------------------------------------------ 记录
+
+    def _history_tab(self) -> QWidget:
+        c = self.cfg
+        self.history_enabled = QCheckBox("保存截图记录（截图图片 + 识别文字 + 译文）")
+        self.history_enabled.setChecked(c["history_enabled"])
+        self.history_limit = QSpinBox()
+        self.history_limit.setRange(10, 10000)
+        self.history_limit.setSingleStep(50)
+        self.history_limit.setValue(int(c["history_limit"]))
+        self.history_limit.setSuffix(" 条")
+        self.history_usage = QLabel()
+
+        open_dir = QPushButton("打开记录文件夹")
+        open_dir.clicked.connect(self.open_history_dir.emit)
+        clear = QPushButton("清空全部记录")
+        clear.clicked.connect(self._confirm_clear)
+
+        form = QFormLayout()
+        form.addRow("最多保留：", self.history_limit)
+        form.addRow("已占用：", self.history_usage)
+        row = QHBoxLayout()
+        row.addWidget(open_dir)
+        row.addWidget(clear)
+        row.addStretch()
+        hint = QLabel("超过上限时自动删除最早的记录。记录保存在："
+                      f"<br>{config.CONFIG_DIR / 'history'}")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray;")
+        hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(self.history_enabled)
+        lay.addLayout(form)
+        lay.addLayout(row)
+        lay.addWidget(hint)
+        lay.addStretch()
+        return w
+
+    def set_history_usage(self, count: int, size: int) -> None:
+        self.history_usage.setText(f"{count} 条，{size / 1024 / 1024:.1f} MB")
+
+    def _confirm_clear(self) -> None:
+        if QMessageBox.question(self, "SnapTrans", "确定清空全部截图记录？此操作不可恢复。") == QMessageBox.Yes:
+            self.clear_history.emit()
+
     # ------------------------------------------------------------ 关于
 
     def _about_tab(self) -> QWidget:
@@ -303,6 +367,10 @@ class SettingsDialog(QDialog):
         c["alt_lang"] = self.alt_lang.currentText()
         c["autostart"] = self.autostart.isChecked()
         c["copy_translation"] = self.copy_translation.isChecked()
+        c["hide_on_snip"] = self.hide_on_snip.isChecked()
+        c["close_to_tray"] = self.close_to_tray.isChecked()
+        c["history_enabled"] = self.history_enabled.isChecked()
+        c["history_limit"] = self.history_limit.value()
         c["ocr"].update(
             engine="api" if self.ocr_api.isChecked() else "windows",
             windows_lang=self.win_lang.currentData(),
@@ -322,9 +390,22 @@ class SettingsDialog(QDialog):
         )
         return c
 
-    def _accept(self) -> None:
-        self.cfg = self._collect()
-        self.accept()
+    def _save(self) -> None:
+        cfg = self._collect()
+        for name, key in (("截图翻译", "hotkey"), ("截图识字", "hotkey_ocr")):
+            if cfg[key]:
+                try:
+                    parse_hotkey(cfg[key])
+                except ValueError as e:
+                    QMessageBox.warning(self, "SnapTrans", f"{name}快捷键无效：{e}")
+                    return
+        if cfg["hotkey"] and cfg["hotkey"] == cfg["hotkey_ocr"]:
+            QMessageBox.warning(self, "SnapTrans", "两个快捷键不能相同")
+            return
+        self.cfg = cfg
+        self.saved.emit(copy.deepcopy(cfg))
+        self.save_hint.setText("✔ 已保存")
+        QTimer.singleShot(3000, lambda: self.save_hint.setText(""))
 
     def _restore(self) -> None:
         d = config.DEFAULTS
@@ -333,6 +414,10 @@ class SettingsDialog(QDialog):
         self.target_lang.setCurrentText(d["target_lang"])
         self.alt_lang.setCurrentText(d["alt_lang"])
         self.copy_translation.setChecked(d["copy_translation"])
+        self.hide_on_snip.setChecked(d["hide_on_snip"])
+        self.close_to_tray.setChecked(d["close_to_tray"])
+        self.history_enabled.setChecked(d["history_enabled"])
+        self.history_limit.setValue(d["history_limit"])
         self.ocr_windows.setChecked(True)
         self.win_lang.setCurrentIndex(0)
         self.tr_enabled.setChecked(True)

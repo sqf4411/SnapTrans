@@ -48,6 +48,10 @@ DEFAULTS = {
     "alt_lang": "English",      # 原文已经是目标语言时，改为翻译成这个语言
     "autostart": False,
     "copy_translation": False,  # 翻译完成后自动复制译文
+    "history_enabled": True,    # 保存截图记录
+    "history_limit": 200,       # 最多保留条数
+    "hide_on_snip": True,       # 截图前隐藏主窗口
+    "close_to_tray": True,      # 关闭主窗口时最小化到托盘
     "ocr": {
         "engine": "windows",    # windows | api
         "windows_lang": "",     # 空 = 跟随系统

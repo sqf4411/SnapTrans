@@ -26,6 +26,7 @@ class OcrError(Exception):
 # ---------------------------------------------------------------- Windows OCR
 
 _engine_lock = threading.Lock()
+_recognize_lock = threading.Lock()  # 同一个 OcrEngine 不允许并发识别
 _engine_cache: dict[str, object] = {}
 
 
@@ -110,7 +111,8 @@ def _windows_recognize(img: QImage, lang: str) -> str:
     async def recognize():
         return await engine.recognize_async(bitmap)
 
-    result = asyncio.run(recognize())
+    with _recognize_lock:
+        result = asyncio.run(recognize())
     lines = [" ".join(w.text for w in line.words) for line in result.lines]
     return clean_text("\n".join(lines))
 

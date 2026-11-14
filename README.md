@@ -6,6 +6,14 @@ Windows 上的截图 OCR 实时翻译工具，用法类似 macOS 上的 Bob，�
 
 ## 功能
 
+启动后会打开**主窗口**（关闭时最小化到托盘，快捷键仍然可用）：
+
+- 工具栏：📷 截图翻译 / 🔤 截图识字 / 📋 翻译剪贴板图片
+- **截图记录**：每次截图都会保存图片、识别出的原文和译文，并显示耗时；支持搜索、预览、复制图片、另存为、重新识别、修改原文后重新翻译、删除（可多选，按 Delete 键）
+- **设置**：快捷键（点击输入框后直接按组合键）、目标语言、OCR 引擎、翻译服务商 / API Key / 模型、记录保留条数、开机启动等
+
+快捷键和其他入口：
+
 - **截图翻译**（默认 `Alt+Q`）：框选后识别并翻译，结果显示在选区旁边的浮窗里
 - **截图识字**（默认 `Alt+W`）：只识别文字，并复制到剪贴板
 - **翻译剪贴板图片**：从托盘菜单打开，例如用 Snipaste 截图后直接翻译
@@ -41,7 +49,7 @@ setup.bat      :: 创建 .venv 并安装依赖（只需运行一次）
 start.bat      :: 启动，程序常驻在系统托盘
 ```
 
-首次启动会自动打开设置窗口，填好翻译 API Key 后就可以用了。配置保存在 `%APPDATA%\SnapTrans\config.json`。
+首次启动会自动打开设置页，填好翻译 API Key 后点「保存设置」就可以用了。配置保存在 `%APPDATA%\SnapTrans\config.json`，截图记录保存在 `%APPDATA%\SnapTrans\history\`。程序已经在运行时再次启动，会直接把已有的主窗口调到前面；开机自启时只在托盘运行，不弹出主窗口。
 
 ### OCR 语言包
 
@@ -59,7 +67,9 @@ snaptrans/
   net.py              HTTP 长连接、预热、流式请求
   translator.py       翻译提示词、目标语言判断
   worker.py           后台线程任务
+  history.py          截图记录（PNG + index.json）
+  main_window.py      主窗口（工具栏、截图记录、设置）
   result_window.py    结果浮窗
-  settings_dialog.py  设置窗口
+  settings_panel.py   设置面板
   hotkey.py           全局快捷键（RegisterHotKey）
 ```

@@ -1,6 +1,6 @@
 """翻译结果浮窗（类似 Bob 的弹窗）：上方原文可编辑，下方流式显示译文。"""
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QCursor, QFont, QGuiApplication, QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
@@ -12,12 +12,16 @@ from .worker import Job
 
 
 class ResultWindow(QWidget):
+    # 记录 id, 更新的字段（source / ocr_ms / translation / target / tr_ms）
+    result = Signal(str, dict)
+
     def __init__(self, get_config):
         super().__init__(None, Qt.Tool | Qt.WindowStaysOnTopHint)
         self._get_config = get_config
         self._job: Job | None = None
         self._ocr_ms: int | None = None
         self._translation = ""
+        self._record_id: str | None = None
         self.setWindowTitle("SnapTrans 截图翻译")
         self.resize(460, 360)
 
@@ -77,7 +81,9 @@ class ResultWindow(QWidget):
 
     # ------------------------------------------------------------ 对外接口
 
-    def start_image(self, image: QImage, anchor: QRect | None, translate: bool = True) -> None:
+    def start_image(self, image: QImage, anchor: QRect | None, translate: bool = True,
+                    record_id: str | None = None) -> None:
+        self._record_id = record_id
         self._ocr_ms = None
         self.source.setPlainText("")
         self._set_translation("")
@@ -85,6 +91,12 @@ class ResultWindow(QWidget):
         self._set_status("识别中…")
         self._show_near(anchor)
         self._run(Job(self._get_config(), image=image, translate=translate), copy_ocr=not translate)
+
+    def start_text(self, text: str, record_id: str | None = None) -> None:
+        self._record_id = record_id
+        self.source.setPlainText(text)
+        self._show_near(None)
+        self.retranslate()
 
     def retranslate(self, target: str | None = None) -> None:
         text = self.source.toPlainText().strip()
@@ -114,6 +126,8 @@ class ResultWindow(QWidget):
             return
         self._ocr_ms = ms
         self.source.setPlainText(text)
+        if self._record_id:
+            self.result.emit(self._record_id, {"source": text, "ocr_ms": ms})
         if copy_ocr:
             if text:
                 self._copy(text)
@@ -129,6 +143,11 @@ class ResultWindow(QWidget):
         parts = [f"识别 {self._ocr_ms}ms"] if self._ocr_ms is not None else []
         parts.append(f"翻译 {ms}ms")
         self._set_status(" · ".join(parts))
+        if self._record_id:
+            self.result.emit(self._record_id, {
+                "source": self.source.toPlainText(), "translation": self._translation,
+                "target": self.lang_box.currentText(), "tr_ms": ms,
+            })
         if self._get_config().get("copy_translation") and self._translation:
             self._copy(self._translation, quiet=True)
 
