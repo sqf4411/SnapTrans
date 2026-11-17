@@ -1,13 +1,40 @@
-"""配置读写。配置文件保存在 %APPDATA%/SnapTrans/config.json。"""
+"""配置读写。
+
+数据目录默认是 %APPDATA%/SnapTrans（配置 config.json + 截图数据库 history.db）。
+便携模式：程序目录（exe 所在文件夹 / 源码根目录）下存在 data 文件夹时，改为保存到这个 data 文件夹，
+方便把整个文件夹拷到 U 盘或别的电脑上连同记录一起使用。
+"""
 
 import copy
 import json
 import os
+import sys
 from pathlib import Path
 
 APP_NAME = "SnapTrans"
-CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
+
+
+def app_dir() -> Path:
+    """exe 所在目录（打包后）或项目根目录（源码运行）。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def _data_dir() -> Path:
+    portable = app_dir() / "data"
+    if portable.is_dir():
+        return portable
+    return Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
+
+
+CONFIG_DIR = _data_dir()
+PORTABLE = CONFIG_DIR.parent == app_dir()
 CONFIG_PATH = CONFIG_DIR / "config.json"
+CONFIG_VERSION = 2
+
+# 旧版默认快捷键 → 新版默认快捷键（用户没改过的才迁移）
+_OLD_HOTKEYS = {"hotkey_capture": "Alt+S", "hotkey": "Alt+Q", "hotkey_ocr": "Alt+W"}
 
 # 翻译服务预设：都走 OpenAI 兼容的 /chat/completions 接口
 TRANSLATE_PRESETS = {
@@ -42,9 +69,10 @@ OCR_PRESETS = {
 LANGUAGES = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
 
 DEFAULTS = {
-    "hotkey_capture": "Alt+S",  # 普通截图（标注 / 贴图）
-    "hotkey": "Alt+Q",          # 截图翻译
-    "hotkey_ocr": "Alt+W",      # 截图 OCR（只识别并复制文字）
+    "config_version": CONFIG_VERSION,
+    "hotkey_capture": "Ctrl+`",  # 普通截图（标注 / 贴图）
+    "hotkey": "Ctrl+1",          # 截图翻译
+    "hotkey_ocr": "Ctrl+2",      # 截图 OCR（只识别并复制文字）
     "target_lang": "简体中文",
     "alt_lang": "English",      # 原文已经是目标语言时，改为翻译成这个语言
     "autostart": False,
@@ -85,12 +113,24 @@ def _merge(base: dict, override: dict) -> dict:
     return out
 
 
+def _migrate(raw: dict) -> dict:
+    if int(raw.get("config_version", 1)) < 2:
+        for key, old in _OLD_HOTKEYS.items():
+            if raw.get(key, old) == old:  # 还是旧默认值 → 换成新默认值
+                raw[key] = DEFAULTS[key]
+        raw["config_version"] = 2
+    return raw
+
+
 def load() -> dict:
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            return _merge(DEFAULTS, json.load(f))
+            raw = json.load(f)
     except (OSError, ValueError):
         return copy.deepcopy(DEFAULTS)
+    if not isinstance(raw, dict):
+        return copy.deepcopy(DEFAULTS)
+    return _merge(DEFAULTS, _migrate(raw))
 
 
 def save(cfg: dict) -> None:

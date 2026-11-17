@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget,
 )
 
+from . import clipboard
 from .history import History
 from .settings_panel import SettingsPanel
 
@@ -84,6 +85,8 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(icon)
         self.resize(900, 600)
         self._current: str | None = None
+        self._shown_image: str | None = None
+        self._thumbs: dict[str, QIcon] = {}
 
         # ---------------- 工具栏
         tb = QToolBar()
@@ -264,10 +267,9 @@ class MainWindow(QMainWindow):
         return f"{r['time'][5:16]}  {mode}\n{first}"
 
     def _thumb(self, rid: str) -> QIcon:
-        path = self.history.image_path(rid)
-        if not path.exists():
-            return QIcon()
-        img = QImage(str(path))
+        if rid in self._thumbs:
+            return self._thumbs[rid]
+        img = self.history.thumbnail(rid)
         if img.isNull():
             return QIcon()
         # 画到统一尺寸的透明画布中央，避免不同比例的缩略图让文字错位
@@ -277,7 +279,11 @@ class MainWindow(QMainWindow):
         p = QPainter(canvas)
         p.drawImage((canvas.width() - scaled.width()) // 2, (canvas.height() - scaled.height()) // 2, scaled)
         p.end()
-        return QIcon(canvas)
+        icon = QIcon(canvas)
+        self._thumbs[rid] = icon
+        if len(self._thumbs) > 3000:
+            self._thumbs.clear()
+        return icon
 
     def _select_record(self, rid: str) -> None:
         """新截图后自动选中最新一条（搜索过滤中则先清空搜索）。"""
@@ -290,6 +296,7 @@ class MainWindow(QMainWindow):
                 return
 
     def _on_record_updated(self, rid: str) -> None:
+        self._thumbs.pop(rid, None)  # 图片可能刚写入数据库，重新生成缩略图
         for i in range(self.list.count()):
             item = self.list.item(i)
             if item.data(Qt.UserRole) == rid:
@@ -306,8 +313,9 @@ class MainWindow(QMainWindow):
         r = self.history.get(rid) if rid else None
         has = r is not None
         for w in (self.btn_copy_img, self.btn_reprocess, self.btn_pin):
-            w.setEnabled(has and self.history.image_path(rid).exists())
+            w.setEnabled(has and self.history.has_image(rid))
         if not has:
+            self._shown_image = None
             self.info.setText("")
             self.image_view.set_pixmap(QPixmap())
             self.source.setPlainText("")
@@ -322,8 +330,11 @@ class MainWindow(QMainWindow):
         target = f"→ {r['target']}  " if r.get("target") else ""
         self.info.setText(f"{r['time']}  {size}{target}{' · '.join(timing)}")
         self.info.setToolTip(self.info.text())
-        path = self.history.image_path(rid)
-        self.image_view.set_pixmap(QPixmap(str(path)) if path.exists() else QPixmap())
+        if rid != self._shown_image:  # 文字更新时不重复解码图片
+            self._shown_image = rid
+            self.image_view.set_pixmap(QPixmap.fromImage(self.history.load_image(rid)))
+        elif self.image_view._pixmap.isNull() and self.history.has_image(rid):
+            self.image_view.set_pixmap(QPixmap.fromImage(self.history.load_image(rid)))
         if self.source.toPlainText() != r.get("source", ""):
             self.source.setPlainText(r.get("source", ""))
         self.translation.setPlainText(r.get("translation", ""))
@@ -338,30 +349,32 @@ class MainWindow(QMainWindow):
 
     def _copy(self, text: str) -> None:
         if text:
-            QApplication.clipboard().setText(text)
+            clipboard.set_text(text)
             self.statusBar().showMessage("已复制", 2000)
 
     def _copy_image(self) -> None:
         if self._current:
-            img = QImage(str(self.history.image_path(self._current)))
+            img = self.history.load_image(self._current)
             if not img.isNull():
-                QApplication.clipboard().setImage(img)
+                clipboard.set_image(img)
                 self.statusBar().showMessage("图片已复制", 2000)
 
     def _save_image_as(self) -> None:
         if not self._current:
             return
-        src = self.history.image_path(self._current)
-        if not src.exists():
+        img = self.history.load_image(self._current)
+        if img.isNull():
             return
-        path, _ = QFileDialog.getSaveFileName(self, "另存为", f"{self._current}.png", "PNG 图片 (*.png)")
+        path, _ = QFileDialog.getSaveFileName(self, "另存为", f"{self._current}.png",
+                                              "PNG 图片 (*.png);;JPEG 图片 (*.jpg);;WebP 图片 (*.webp)")
         if path:
-            QImage(str(src)).save(path)
+            img.save(path, None, 100 if path.lower().endswith(".webp") else -1)
             self.statusBar().showMessage(f"已保存到 {path}", 3000)
 
     def _open_image(self, rid: str | None) -> None:
-        if rid and self.history.image_path(rid).exists():
-            self.open_path.emit(str(self.history.image_path(rid)))
+        path = self.history.export_temp(rid) if rid else None
+        if path:
+            self.open_path.emit(str(path))
 
     def _retranslate(self) -> None:
         text = self.source.toPlainText().strip()

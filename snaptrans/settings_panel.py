@@ -7,9 +7,9 @@ import time
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QKeySequenceEdit,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QSpinBox, QTabWidget, QVBoxLayout,
-    QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QKeySequenceEdit, QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QSpinBox, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
 from . import __version__, config, ocr, translator
@@ -18,15 +18,61 @@ from .hotkey import parse_hotkey
 
 class _Bridge(QObject):
     result = Signal(object, str)  # 目标标签, 文本
+    done = Signal(bool, str)      # 语言包安装结束
 
 
-def _key_edit(text: str) -> QKeySequenceEdit:
-    edit = QKeySequenceEdit(QKeySequence(text))
-    if hasattr(edit, "setMaximumSequenceLength"):
-        edit.setMaximumSequenceLength(1)
-    if hasattr(edit, "setClearButtonEnabled"):
-        edit.setClearButtonEnabled(True)
-    return edit
+class KeyEdit(QLineEdit):
+    """快捷键录制框：支持 Ctrl+` 等特殊按键（Qt 自带的 QKeySequenceEdit 在 Windows 上常漏掉反引号 `）。"""
+
+    _KEY_NAMES = {
+        Qt.Key_QuoteLeft: "`", Qt.Key_AsciiTilde: "`", Qt.Key_Space: "Space", Qt.Key_Tab: "Tab",
+        Qt.Key_Return: "Return", Qt.Key_Enter: "Return", Qt.Key_Insert: "Ins", Qt.Key_Delete: "Del",
+        Qt.Key_Home: "Home", Qt.Key_End: "End", Qt.Key_PageUp: "PgUp", Qt.Key_PageDown: "PgDown",
+        Qt.Key_Left: "Left", Qt.Key_Up: "Up", Qt.Key_Right: "Right", Qt.Key_Down: "Down",
+        Qt.Key_Minus: "-", Qt.Key_Equal: "=", Qt.Key_BracketLeft: "[", Qt.Key_BracketRight: "]",
+        Qt.Key_Backslash: "\\", Qt.Key_Semicolon: ";", Qt.Key_Apostrophe: "'", Qt.Key_Comma: ",",
+        Qt.Key_Period: ".", Qt.Key_Slash: "/",
+    }
+
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self.setReadOnly(True)
+        self.setClearButtonEnabled(True)
+        self.setPlaceholderText("点击此处后按下组合键…")
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        if k in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta, Qt.Key_unknown):
+            return
+        if k in (Qt.Key_Backspace, Qt.Key_Escape) and not e.modifiers():
+            self.clear()
+            return
+        mods = []
+        m = e.modifiers()
+        if m & Qt.ControlModifier:
+            mods.append("Ctrl")
+        if m & Qt.AltModifier:
+            mods.append("Alt")
+        if m & Qt.ShiftModifier:
+            mods.append("Shift")
+        if m & Qt.MetaModifier:
+            mods.append("Meta")
+        name = self._KEY_NAMES.get(k)
+        if not name:
+            if Qt.Key_A <= k <= Qt.Key_Z or Qt.Key_0 <= k <= Qt.Key_9:
+                name = chr(k)
+            elif Qt.Key_F1 <= k <= Qt.Key_F24:
+                name = f"F{k - Qt.Key_F1 + 1}"
+            elif e.nativeVirtualKey() == 0xC0:
+                name = "`"
+            else:
+                name = QKeySequence(k).toString(QKeySequence.PortableText)
+        if name:
+            self.setText("+".join([*mods, name]))
+
+
+def _key_edit(text: str) -> KeyEdit:
+    return KeyEdit(text)
 
 
 def _secret_edit(text: str) -> QWidget:
@@ -65,6 +111,7 @@ class SettingsPanel(QWidget):
         self.cfg = copy.deepcopy(cfg)
         self._bridge = _Bridge()
         self._bridge.result.connect(lambda label, text: label.setText(text))
+        self._bridge.done.connect(self._on_install_done)
 
         tabs = QTabWidget()
         tabs.addTab(self._general_tab(), "常规")
@@ -129,7 +176,8 @@ class SettingsPanel(QWidget):
         form.addRow("目标语言：", self.target_lang)
         form.addRow("原文已是目标语言时译为：", self.alt_lang)
         tip = QLabel("点击快捷键输入框后直接按下新的组合键即可修改，按 × 清空表示不使用。"
-                     "Snipaste 默认占用 F1 / F3，请避免冲突。")
+                     "默认：截图 Ctrl+`（Esc 下方的键）、截图翻译 Ctrl+1、截图识字 Ctrl+2。"
+                     "全局快捷键会覆盖其他软件的同名快捷键（如 VS Code 的 Ctrl+` 打开终端），冲突时请换一个。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color: gray;")
 
@@ -152,16 +200,23 @@ class SettingsPanel(QWidget):
         (self.ocr_api if c["engine"] == "api" else self.ocr_windows).setChecked(True)
 
         self.win_lang = QComboBox()
-        self.win_lang.addItem("跟随系统语言", "")
-        for tag in ocr.windows_languages():
-            self.win_lang.addItem(tag, tag)
-        idx = self.win_lang.findData(c["windows_lang"])
-        self.win_lang.setCurrentIndex(max(idx, 0))
+        self._fill_win_langs(c["windows_lang"])
+        self.win_installed = QLabel()
+        self.win_installed.setWordWrap(True)
+        self._update_installed()
+        install = QPushButton("安装 OCR 语言包…")
+        install.setToolTip("韩文、日文、英文等需要先安装对应的 Windows OCR 语言包（需要联网和管理员确认）")
+        install.clicked.connect(self._install_langs)
         win_box = QGroupBox("Windows OCR")
         win_form = QFormLayout(win_box)
-        win_form.addRow("识别语言：", self.win_lang)
-        hint = QLabel("中文语言包可同时识别中英文。识别日文/韩文等需要在 Windows 设置 → 时间和语言 → "
-                      "语言 中添加对应语言（含“光学字符识别”）。")
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(self.win_lang, 1)
+        lang_row.addWidget(install)
+        win_form.addRow("识别语言：", lang_row)
+        win_form.addRow("已安装：", self.win_installed)
+        hint = QLabel("Windows OCR 只能识别<b>已安装语言包</b>的文字（中文包可同时识别中英文）。"
+                      "要识别韩文、日文等，请点“安装 OCR 语言包”。选“自动”时会用所有已安装的语言同时识别，"
+                      "自动挑选最准确的结果。也可以改用下面的在线视觉模型（如 qwen-vl-ocr），无需安装、支持各种语言。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray;")
         win_form.addRow(hint)
@@ -204,6 +259,71 @@ class SettingsPanel(QWidget):
         lay.addLayout(row)
         lay.addStretch()
         return w
+
+    def _fill_win_langs(self, current: str) -> None:
+        self.win_lang.clear()
+        self.win_lang.addItem("自动（所有已安装语言，自动选最佳结果）", "")
+        for tag in ocr.windows_languages():
+            self.win_lang.addItem(ocr.language_name(tag), tag)
+        self.win_lang.setCurrentIndex(max(self.win_lang.findData(current), 0))
+        if hasattr(self, "win_installed"):
+            self._update_installed()
+
+    def _update_installed(self) -> None:
+        tags = ocr.windows_languages()
+        text = "、".join(ocr.language_name(t) for t in tags) or "无"
+        if not any(t.lower().startswith("ko") for t in tags):
+            text += "　<span style='color:#c05000'>（未安装韩语，无法识别韩文）</span>"
+        self.win_installed.setText(text)
+
+    def _install_langs(self) -> None:
+        installed = [t.lower() for t in ocr.windows_languages()]
+
+        def is_installed(tag: str) -> bool:
+            low = tag.lower()
+            if low == "zh-cn":
+                return any(t.startswith("zh-hans") or t == "zh-cn" for t in installed)
+            if low == "zh-tw":
+                return any(t.startswith("zh-hant") or t == "zh-tw" for t in installed)
+            return any(t == low or t.split("-")[0] == low.split("-")[0] for t in installed)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("安装 Windows OCR 语言包")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("选择要安装的识别语言（需要联网，会弹出管理员确认）："))
+        boxes = []
+        for tag, name in ocr.INSTALLABLE:
+            cb = QCheckBox(name + ("（已安装）" if is_installed(tag) else ""))
+            cb.setEnabled(not is_installed(tag))
+            cb.setChecked(tag == "ko-KR" and cb.isEnabled())
+            boxes.append((tag, cb))
+            lay.addWidget(cb)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Ok).setText("安装")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        tags = [t for t, cb in boxes if cb.isChecked() and cb.isEnabled()]
+        if not tags:
+            return
+        self.win_installed.setText("正在安装，请在弹出的窗口中等待完成…")
+        current = self.win_lang.currentData()
+
+        def run():
+            ok = ocr.install_languages(tags)
+            self._bridge.done.emit(ok, current)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_install_done(self, ok: bool, current: str) -> None:
+        self._fill_win_langs(current)
+        if not ok:
+            QMessageBox.warning(self, "SnapTrans", "未能启动安装（可能在管理员确认中选择了“否”）。")
+            return
+        QMessageBox.information(self, "SnapTrans", "安装窗口已关闭。新语言如果没有出现在列表中，请重启 SnapTrans 或电脑后再试。"
+                                "\n\n识别语言保持“自动”即可自动识别韩文等新语言。")
 
     def _apply_ocr_preset(self, name: str) -> None:
         preset = config.OCR_PRESETS.get(name)
@@ -327,8 +447,10 @@ class SettingsPanel(QWidget):
         row.addWidget(open_dir)
         row.addWidget(clear)
         row.addStretch()
-        hint = QLabel("超过上限时自动删除最早的记录。记录保存在："
-                      f"<br>{config.CONFIG_DIR / 'history'}")
+        hint = QLabel("截图以无损 WebP 压缩后保存在本地 SQLite 数据库中（同样清晰，体积约为 PNG 的 1/3），"
+                      "超过上限时自动删除最早的记录。数据库位置："
+                      f"<br>{config.CONFIG_DIR / 'history.db'}"
+                      + ("<br>（便携模式：数据保存在程序目录的 data 文件夹）" if config.PORTABLE else ""))
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray;")
         hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -375,9 +497,9 @@ class SettingsPanel(QWidget):
 
     def _collect(self) -> dict:
         c = copy.deepcopy(self.cfg)
-        c["hotkey_capture"] = self.hk_capture.keySequence().toString(QKeySequence.PortableText)
-        c["hotkey"] = self.hk_translate.keySequence().toString(QKeySequence.PortableText)
-        c["hotkey_ocr"] = self.hk_ocr.keySequence().toString(QKeySequence.PortableText)
+        c["hotkey_capture"] = self.hk_capture.text().strip()
+        c["hotkey"] = self.hk_translate.text().strip()
+        c["hotkey_ocr"] = self.hk_ocr.text().strip()
         c["target_lang"] = self.target_lang.currentText()
         c["alt_lang"] = self.alt_lang.currentText()
         c["autostart"] = self.autostart.isChecked()
@@ -428,9 +550,9 @@ class SettingsPanel(QWidget):
 
     def _restore(self) -> None:
         d = config.DEFAULTS
-        self.hk_capture.setKeySequence(QKeySequence(d["hotkey_capture"]))
-        self.hk_translate.setKeySequence(QKeySequence(d["hotkey"]))
-        self.hk_ocr.setKeySequence(QKeySequence(d["hotkey_ocr"]))
+        self.hk_capture.setText(d["hotkey_capture"])
+        self.hk_translate.setText(d["hotkey"])
+        self.hk_ocr.setText(d["hotkey_ocr"])
         self.target_lang.setCurrentText(d["target_lang"])
         self.alt_lang.setCurrentText(d["alt_lang"])
         self.copy_translation.setChecked(d["copy_translation"])

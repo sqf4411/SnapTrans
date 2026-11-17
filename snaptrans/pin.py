@@ -5,7 +5,9 @@
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QMenu, QWidget
+
+from . import clipboard
 
 B = 1  # 边框宽度（像素），图片内容与原截图位置对齐
 
@@ -82,7 +84,7 @@ class PinWindow(QWidget):
         self.show_toast(f"{round(self._zoom * 100)}%")
 
     def copy(self) -> None:
-        QApplication.clipboard().setImage(self.image)
+        clipboard.set_image(self.image)
         self.show_toast("已复制")
 
     def page(self, step: int) -> None:
@@ -90,7 +92,7 @@ class PinWindow(QWidget):
         if self.history is None:
             self.show_toast("没有截图记录")
             return
-        recs = [r for r in self.history.records() if self.history.image_path(r["id"]).exists()]
+        recs = [r for r in self.history.records() if self.history.has_image(r["id"])]
         if not recs:
             self.show_toast("没有截图记录")
             return
@@ -105,7 +107,7 @@ class PinWindow(QWidget):
         if i >= len(ids):
             self.show_toast("已经是最早一张")
             return
-        image = QImage(str(self.history.image_path(ids[i])))
+        image = self.history.load_image(ids[i])
         if image.isNull():
             return
         self.rid = ids[i]

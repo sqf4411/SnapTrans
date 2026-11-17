@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
+from . import clipboard
 from .config import LANGUAGES
 from .worker import Job
 
@@ -129,6 +130,7 @@ class ResultWindow(QWidget):
         if self._job:
             self._job.cancel()
         self._job = job
+        self._clip_token = clipboard.token()
         job.ocr_done.connect(lambda text, ms: self._on_ocr(job, text, ms, copy_ocr))
         job.target_chosen.connect(lambda lang: job is self._job and self.lang_box.setCurrentText(lang))
         job.chunk.connect(lambda s: job is self._job and self._set_translation(self._translation + s))
@@ -145,8 +147,11 @@ class ResultWindow(QWidget):
             self.result.emit(self._record_id, {"source": text, "ocr_ms": ms})
         if copy_ocr:
             if text:
-                self._copy(text)
-                self._set_status(f"识别 {ms}ms · 已复制到剪贴板")
+                if self._clip_token == clipboard.token():
+                    clipboard.set_text(text, since=self._clip_token)
+                    self._set_status(f"识别 {ms}ms · 已复制到剪贴板")
+                else:  # 识别期间用户又主动复制了别的内容，不覆盖
+                    self._set_status(f"识别 {ms}ms · 未复制（剪贴板已有更新内容）")
             else:
                 self._set_status(f"识别 {ms}ms · 没有识别到文字")
         elif text:
@@ -164,7 +169,7 @@ class ResultWindow(QWidget):
                 "target": self.lang_box.currentText(), "tr_ms": ms,
             })
         if self._get_config().get("copy_translation") and self._translation:
-            self._copy(self._translation, quiet=True)
+            clipboard.set_text(self._translation, since=self._clip_token)
 
     def _on_failed(self, msg: str) -> None:
         self._set_status("出错了")
@@ -178,11 +183,10 @@ class ResultWindow(QWidget):
     def _set_status(self, text: str) -> None:
         self.status.setText(text)
 
-    def _copy(self, text: str, quiet: bool = False) -> None:
+    def _copy(self, text: str) -> None:
         if text:
-            QApplication.clipboard().setText(text)
-            if not quiet:
-                self._set_status(self.status.text().split(" · 已复制")[0] + " · 已复制")
+            clipboard.set_text(text)
+            self._set_status(self.status.text().split(" · 已复制")[0] + " · 已复制")
 
     def _show_near(self, anchor: QRect | None) -> None:
         if anchor is None:

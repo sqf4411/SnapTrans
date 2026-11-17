@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QScrollArea, QToolButton, QVBoxLayout, QWidget,
 )
 
+from . import clipboard
 from .worker import Job
 
 _STYLE = """
@@ -152,6 +153,7 @@ class Bubble(QWidget):
     def _run(self, job: Job) -> None:
         # 旧任务不取消：让它在后台完成并写入截图记录，只是不再刷新界面
         self._job = job
+        self._clip_token = clipboard.token()
         rid = self._record_id
         acc: list[str] = []
         target = {"lang": ""}
@@ -199,8 +201,10 @@ class Bubble(QWidget):
                 self._set_text("…", muted=True)
             return
         if text:
-            QApplication.clipboard().setText(text)
-            self.status.setText(f"识别 {ms}ms · 已复制")
+            # 识别期间用户又主动复制了别的（如截图），就不覆盖
+            copied = self._clip_token == clipboard.token()
+            clipboard.set_text(text, since=self._clip_token)
+            self.status.setText(f"识别 {ms}ms · " + ("已复制" if copied else "未复制（剪贴板已有更新内容）"))
             self._set_text(text)
         else:
             self.status.setText(f"识别 {ms}ms")
@@ -213,7 +217,7 @@ class Bubble(QWidget):
             parts.append(f"→ {self.target_lang}")
         self.status.setText(" · ".join(parts))
         if self._get_config().get("copy_translation") and self.translation:
-            QApplication.clipboard().setText(self.translation)
+            clipboard.set_text(self.translation, since=self._clip_token)
 
     def _on_failed(self, msg: str) -> None:
         self.status.setText("出错了")
@@ -243,8 +247,8 @@ class Bubble(QWidget):
     def _copy(self) -> None:
         text = self.translation if self._translate else self.source_text
         if text:
-            QApplication.clipboard().setText(text)
-            base = self.status.text().split(" · 已复制")[0]
+            clipboard.set_text(text)
+            base = self.status.text().split(" · 已复制")[0].split(" · 未复制")[0]
             self.status.setText(base + " · 已复制")
 
     def _screen_area(self) -> QRect:

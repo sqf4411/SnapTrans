@@ -11,7 +11,7 @@ from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QIc
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import config, net, ocr
+from . import clipboard, config, net, ocr
 from .bubble import Bubble
 from .capture import SnipController
 from .history import History
@@ -222,10 +222,14 @@ class App:
 
     def _on_action(self, action: str, image: QImage, rect: QRect) -> None:
         """普通截图模式下，工具栏上的操作。"""
-        rid = self._record(image, {"translate": "translate", "ocr": "ocr"}.get(action, "capture"))
+        mode = {"translate": "translate", "ocr": "ocr"}.get(action, "capture")
         if action == "copy":
-            QApplication.clipboard().setImage(image)
-        elif action == "save":
+            # 先写剪贴板（立即渲染、失败重试），再保存记录，保证马上粘贴就是这张截图
+            clipboard.set_image(image)
+            QTimer.singleShot(0, lambda: self._record(image, mode))
+            return
+        rid = self._record(image, mode)
+        if action == "save":
             self.save_image(image)
         elif action == "pin":
             self.pin_image(image, rect.topLeft(), rid)
@@ -280,7 +284,7 @@ class App:
             pin.close()
 
     def pin_record(self, rid: str) -> None:
-        image = QImage(str(self.history.image_path(rid)))
+        image = self.history.load_image(rid)
         if image.isNull():
             return
         screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
@@ -291,7 +295,7 @@ class App:
         self.pin_image(image, pos, rid)
 
     def pin_latest(self) -> None:
-        rec = next((r for r in self.history.records() if self.history.image_path(r["id"]).exists()), None)
+        rec = next((r for r in self.history.records() if self.history.has_image(r["id"])), None)
         if rec is None:
             self.tray.showMessage("SnapTrans", "还没有截图记录", self.icon, 3000)
             return
@@ -319,7 +323,7 @@ class App:
         self._show_result(image, None, True, self._record(image, "clipboard"))
 
     def reprocess(self, rid: str) -> None:
-        image = QImage(str(self.history.image_path(rid)))
+        image = self.history.load_image(rid)
         if image.isNull():
             return
         self._warmup()
@@ -335,6 +339,7 @@ class App:
         self.close_all_pins()
         self.hotkeys.unregister_all()
         self.tray.hide()
+        self.history.close()
         self.qapp.quit()
 
 
@@ -365,6 +370,18 @@ def _selftest(path: str) -> int:
         lines.append(f"ocr languages: {ocr.windows_languages()}")
         lines.append(f"windows: {len(winutil.window_rects())}, monitors: {len(winutil.monitor_rects())}")
         lines.append(f"icon ok: {not make_icon().isNull()}")
+        import sqlite3
+        import tempfile
+        from . import history as hist
+        tmp = Path(tempfile.mkdtemp()) / "selftest.db"
+        h = History(tmp)
+        rid = h.add_image(_sample_image(), "capture")
+        time.sleep(1)
+        img = h.load_image(rid)
+        fmt = h._db.execute("SELECT fmt FROM images WHERE id=?", (rid,)).fetchone()
+        h.close()
+        lines.append(f"sqlite {sqlite3.sqlite_version}, webp {hist._WEBP}, stored as {fmt}, "
+                     f"roundtrip ok: {img.size().toTuple() == (520, 60)}")
         code = 0
     except Exception:
         lines.append(traceback.format_exc())
