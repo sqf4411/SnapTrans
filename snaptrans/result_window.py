@@ -147,8 +147,7 @@ class ResultWindow(QWidget):
             self.result.emit(self._record_id, {"source": text, "ocr_ms": ms})
         if copy_ocr:
             if text:
-                if self._clip_token == clipboard.token():
-                    clipboard.set_text(text, since=self._clip_token)
+                if clipboard.set_text(text, since=self._clip_token):
                     self._set_status(f"识别 {ms}ms · 已复制到剪贴板")
                 else:  # 识别期间用户又主动复制了别的内容，不覆盖
                     self._set_status(f"识别 {ms}ms · 未复制（剪贴板已有更新内容）")

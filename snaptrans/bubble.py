@@ -202,8 +202,7 @@ class Bubble(QWidget):
             return
         if text:
             # 识别期间用户又主动复制了别的（如截图），就不覆盖
-            copied = self._clip_token == clipboard.token()
-            clipboard.set_text(text, since=self._clip_token)
+            copied = clipboard.set_text(text, since=self._clip_token)
             self.status.setText(f"识别 {ms}ms · " + ("已复制" if copied else "未复制（剪贴板已有更新内容）"))
             self._set_text(text)
         else:

@@ -7,6 +7,10 @@ Qt 的 QClipboard 在 Windows 上用 OLE 延迟渲染：真正的数据要等别
 这里直接调用 Win32 API：打开剪贴板失败会重试，数据立即写入（CF_DIB + PNG / CF_UNICODETEXT），
 不依赖本程序主线程是否空闲。
 
+注意：OpenClipboard 必须传一个真实窗口作为剪贴板所有者。传 NULL 时 EmptyClipboard 会把所有者设为 NULL，
+按微软文档“这会导致 SetClipboardData 失败”——结果就是剪贴板被清空但没写进去（粘贴不出东西），
+再走 Qt 兜底时又可能失败（粘贴出来还是旧内容）。所以这里创建一个隐藏的 message-only 窗口专门做所有者。
+
 另外维护一个“复制序号”：用户每次主动复制都会 +1。后台任务（识字自动复制、翻译完成自动复制）
 在开始时记下序号，完成时如果用户在此期间又主动复制过别的内容，就不再覆盖剪贴板。
 """
@@ -37,12 +41,31 @@ _kernel32.GlobalLock.restype = ctypes.c_void_p
 _kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
 _kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
 _kernel32.GlobalFree.restype = wintypes.HGLOBAL
+_user32.CreateWindowExW.argtypes = [
+    wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int,
+    ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+]
+_user32.CreateWindowExW.restype = wintypes.HWND
+_user32.IsWindow.argtypes = [wintypes.HWND]
+_user32.IsWindow.restype = wintypes.BOOL
 
 CF_UNICODETEXT = 13
 CF_DIB = 8
 GMEM_MOVEABLE = 0x0002
+HWND_MESSAGE = wintypes.HWND(-3)
 
 _seq = 0  # 用户主动复制的次数
+_owner_hwnd = None
+
+
+def _owner():
+    """剪贴板所有者窗口（在主线程首次复制时创建，之后复用）。创建失败时返回 None。"""
+    global _owner_hwnd
+    if not (_owner_hwnd and _user32.IsWindow(_owner_hwnd)):
+        # 系统自带的 STATIC 窗口类，不需要注册窗口过程；消息由 Qt 的事件循环顺带分发
+        _owner_hwnd = _user32.CreateWindowExW(0, "STATIC", "SnapTrans Clipboard", 0, 0, 0, 0, 0,
+                                              HWND_MESSAGE, None, None, None) or None
+    return _owner_hwnd
 
 
 def token() -> int:
@@ -74,8 +97,9 @@ def _global(data: bytes):
 
 
 def _open(retries: int = 40, delay: float = 0.025) -> bool:
-    for _ in range(retries):  # 最多等约 1 秒
-        if _user32.OpenClipboard(None):
+    hwnd = _owner()
+    for _ in range(retries):  # 剪贴板被其他程序短暂占用时重试，最多等约 1 秒
+        if _user32.OpenClipboard(hwnd):
             return True
         time.sleep(delay)
     return False
@@ -100,25 +124,29 @@ def _write(items: list[tuple[int, bytes]]) -> bool:
 
 
 def set_image(image: QImage) -> bool:
-    """用户主动复制图片。"""
-    _bump()
+    """用户主动复制图片。返回 False 表示图片为空，没有复制。"""
     if image.isNull():
         return False
+    _bump()
     img = image.convertToFormat(QImage.Format_RGB32)
     img.setDevicePixelRatio(1.0)
     try:
-        dib = _encode(img, "BMP")[14:]  # 去掉 14 字节的 BITMAPFILEHEADER 就是 CF_DIB
+        bmp = _encode(img, "BMP")
         png = _encode(img, "PNG")
-        if _write([(CF_DIB, dib), (_user32.RegisterClipboardFormatW("PNG"), png)]):
+        if len(bmp) > 14 and _write([(CF_DIB, bmp[14:]),  # 去掉 14 字节的 BITMAPFILEHEADER 就是 CF_DIB
+                                     (_user32.RegisterClipboardFormatW("PNG"), png)]):
             return True
     except Exception:
         pass
-    QApplication.clipboard().setImage(image)  # 兜底
-    return False
+    QApplication.clipboard().setImage(img)  # 兜底
+    return True
 
 
 def set_text(text: str, since: int | None = None) -> bool:
-    """复制文字。since 不为空时表示后台自动复制：用户之后又主动复制过，就跳过。"""
+    """复制文字。since 不为空时表示后台自动复制：用户之后又主动复制过，就跳过。
+
+    返回 True 表示已写入剪贴板，False 表示文字为空或被跳过。
+    """
     if not text:
         return False
     if since is not None:
@@ -131,5 +159,5 @@ def set_text(text: str, since: int | None = None) -> bool:
             return True
     except Exception:
         pass
-    QApplication.clipboard().setText(text)
-    return False
+    QApplication.clipboard().setText(text)  # 兜底
+    return True
